@@ -22,6 +22,8 @@ use app::{ActiveModal, App, AuthData, BgEvent, Pane};
 use client::auth;
 use client::graph_credential::GraphCredential;
 use client::group::GroupPimClient;
+use client::jira::JiraClient;
+use client::jira_cache::Lookup;
 use client::models::RoleType;
 use client::pim::PimClient;
 use event::EventAction;
@@ -55,6 +57,7 @@ async fn main() -> Result<()> {
 
     let config = config::Config::load()?;
     let auto_refresh = Duration::from_secs(config.auto_refresh_secs);
+    let client_id = config.default_client_id.clone();
     let mut app = App::new(config);
 
     // Spawn auth in background
@@ -72,8 +75,11 @@ async fn main() -> Result<()> {
                     }
                 });
 
-                let graph_credential =
-                    Arc::new(GraphCredential::new(info.tenant_id, Some(status_tx)));
+                let graph_credential = Arc::new(GraphCredential::new(
+                    info.tenant_id,
+                    client_id,
+                    Some(status_tx),
+                ));
 
                 let _ = tx.send(BgEvent::AuthReady(Ok(AuthData {
                     credential: info.credential,
@@ -153,6 +159,14 @@ async fn run_app(
             needs_permissions_fetch = false;
         }
 
+        // Look up a manually typed ticket number once typing pauses
+        if let Some(key) = app
+            .activation_form_mut()
+            .and_then(|form| form.take_pending_lookup(Duration::from_millis(400)))
+        {
+            spawn_lookup_jira_issue(app, key);
+        }
+
         // Trigger group fetch on first visit to Groups pane
         if app.needs_group_fetch() && app.auth.is_some() {
             spawn_fetch_groups(app);
@@ -190,7 +204,14 @@ async fn run_app(
                         handle_modal_action(app, action);
                     }
                 } else {
-                    match event::handle_key(app, key) {
+                    let action = event::handle_key(app, key);
+                    if matches!(
+                        app.modal,
+                        ActiveModal::Activate { .. } | ActiveModal::BulkActivate { .. }
+                    ) {
+                        spawn_fetch_jira(app);
+                    }
+                    match action {
                         EventAction::Refresh => {
                             match app.active_pane {
                                 Pane::Resources => {
@@ -292,6 +313,59 @@ fn spawn_fetch_groups(app: &mut App) {
     });
 }
 
+fn spawn_fetch_jira(app: &mut App) {
+    if !app.config.ticket_fields_enabled {
+        return;
+    }
+    let Some((url, email, token)) = app.config.jira_credentials() else {
+        return;
+    };
+    match app.jira_cache.search() {
+        Lookup::Cached(issues) => {
+            if let Some(form) = app.activation_form_mut() {
+                form.set_jira_issues(issues);
+            }
+            return;
+        }
+        Lookup::InFlight => return,
+        Lookup::Fetch => {}
+    }
+    let jql = app.config.jira_jql.clone();
+
+    let tx = app.bg_tx.clone();
+    tokio::spawn(async move {
+        let client = JiraClient::new(&url, &email, &token);
+        let result = client.search(&jql).await;
+        let _ = tx.send(BgEvent::JiraIssuesLoaded(result.map_err(|e| e.to_string())));
+    });
+}
+
+fn spawn_lookup_jira_issue(app: &mut App, key: String) {
+    let Some((url, email, token)) = app.config.jira_credentials() else {
+        return;
+    };
+    match app.jira_cache.issue(&key) {
+        Lookup::Cached(issue) => {
+            if let Some(form) = app.activation_form_mut() {
+                form.set_looked_up_issue(&key, issue);
+            }
+            return;
+        }
+        Lookup::InFlight => return,
+        Lookup::Fetch => {}
+    }
+
+    let tx = app.bg_tx.clone();
+    tokio::spawn(async move {
+        let client = JiraClient::new(&url, &email, &token);
+        let result = client.get_issue(&key).await;
+        let _ = tx.send(BgEvent::JiraIssueLookedUp {
+            key,
+            result: result.map_err(|e| e.to_string()),
+        });
+    });
+}
+
 fn handle_modal_action(app: &mut App, action: ModalAction) {
     let auth = match &app.auth {
         Some(a) => a.clone(),
@@ -301,15 +375,11 @@ fn handle_modal_action(app: &mut App, action: ModalAction) {
     let pane = app.active_pane;
 
     match action {
-        ModalAction::Activate {
-            indices,
-            justification,
-            duration_hours,
-        } => {
+        ModalAction::Activate { indices, request } => {
             for idx in indices {
                 let tx = app.bg_tx.clone();
                 let role = app.active_roles()[idx].clone();
-                let just = justification.clone();
+                let request = request.clone();
                 let auth = auth.clone();
 
                 tokio::spawn(async move {
@@ -319,13 +389,13 @@ fn handle_modal_action(app: &mut App, action: ModalAction) {
                             auth.principal_id.clone(),
                             auth.subscriptions.clone(),
                         );
-                        client.activate_role(&role, &just, duration_hours).await
+                        client.activate_role(&role, &request).await
                     } else {
                         let client = GroupPimClient::new(
                             auth.graph_credential.clone(),
                             auth.principal_id.clone(),
                         );
-                        client.activate_group(&role, &just, duration_hours).await
+                        client.activate_group(&role, &request).await
                     };
 
                     let _ = tx.send(BgEvent::ActivationResult {
