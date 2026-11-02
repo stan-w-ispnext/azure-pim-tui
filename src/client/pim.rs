@@ -294,12 +294,7 @@ impl PimClient {
         })
     }
 
-    pub async fn activate_role(
-        &self,
-        role: &PimRole,
-        justification: &str,
-        duration_hours: u32,
-    ) -> Result<()> {
+    pub async fn activate_role(&self, role: &PimRole, request: &ActivationRequest) -> Result<()> {
         let request_id = Uuid::new_v4().to_string();
         let base = format!(
             "{BASE_URL}{}/providers/Microsoft.Authorization/roleAssignmentScheduleRequests/{request_id}",
@@ -312,13 +307,14 @@ impl PimClient {
                 principal_id: self.principal_id.clone(),
                 request_type: "SelfActivate".to_string(),
                 linked_role_eligibility_schedule_id: Some(role.eligibility_id.clone()),
-                justification: Some(justification.to_string()),
+                justification: Some(request.justification.clone()),
                 schedule_info: Some(ScheduleInfo {
                     expiration: ExpirationInfo {
                         expiration_type: "AfterDuration".to_string(),
-                        duration: format!("PT{duration_hours}H"),
+                        duration: format!("PT{}H", request.duration_hours),
                     },
                 }),
+                ticket_info: request.ticket_info.clone(),
             },
         };
 
@@ -413,6 +409,7 @@ impl PimClient {
                 linked_role_eligibility_schedule_id: Some(role.eligibility_id.clone()),
                 justification: None,
                 schedule_info: None,
+                ticket_info: None,
             },
         };
 

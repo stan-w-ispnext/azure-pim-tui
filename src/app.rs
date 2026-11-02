@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use azure_core::credentials::TokenCredential;
 use chrono::{DateTime, Utc};
@@ -7,8 +8,11 @@ use tokio::sync::mpsc;
 
 use crate::client::auth::SubscriptionInfo;
 use crate::client::graph_credential::GraphCredential;
+use crate::client::jira::JiraIssue;
+use crate::client::jira_cache::JiraCache;
 use crate::client::models::{
-    sort_group_roles, sort_resource_roles, PimRole, RoleFetch, RoleStatus,
+    sort_group_roles, sort_resource_roles, ActivationRequest, PimRole, RoleFetch, RoleStatus,
+    TicketInfo,
 };
 use crate::config::Config;
 
@@ -35,6 +39,12 @@ pub enum BgEvent {
     RolePermissionsLoaded(Result<HashMap<String, Vec<String>>, String>),
     /// Status message from graph credential (device code flow)
     GraphStatus(String),
+    JiraIssuesLoaded(Result<Vec<JiraIssue>, String>),
+    /// Lookup of a manually typed ticket number; `None` when it doesn't exist.
+    JiraIssueLookedUp {
+        key: String,
+        result: Result<Option<JiraIssue>, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,15 +99,11 @@ pub enum ActiveModal {
     None,
     Activate {
         role_index: usize,
-        justification: String,
-        duration: String,
-        focused_field: ModalField,
+        form: ActivationForm,
     },
     BulkActivate {
         indices: Vec<usize>,
-        justification: String,
-        duration: String,
-        focused_field: ModalField,
+        form: ActivationForm,
     },
     DeactivateConfirm {
         role_index: usize,
@@ -105,10 +111,238 @@ pub enum ActiveModal {
     Help,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModalField {
     Justification,
     Duration,
+    TicketNumber,
+    TicketSystem,
+}
+
+impl ModalField {
+    pub fn label(self) -> &'static str {
+        match self {
+            ModalField::Justification => "Justification",
+            ModalField::Duration => "Duration (hrs)",
+            ModalField::TicketNumber => "Ticket number",
+            ModalField::TicketSystem => "Ticket system",
+        }
+    }
+}
+
+/// Editable state of the activation modal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivationForm {
+    pub justification: String,
+    pub duration: String,
+    pub ticket_number: String,
+    pub ticket_system: String,
+    pub show_ticket: bool,
+    pub focused: ModalField,
+    /// In-progress Jira issues offered for the ticket number field.
+    pub jira_issues: Vec<JiraIssue>,
+    pub jira_selected: Option<usize>,
+    /// Issue found by looking up a manually typed ticket number.
+    pub looked_up_issue: Option<JiraIssue>,
+    /// Set once the user types in the justification; until then it follows
+    /// the current issue's title.
+    pub justification_edited: bool,
+    default_justification: String,
+    /// When the ticket number last changed by hand, for debouncing lookups.
+    ticket_edited_at: Option<Instant>,
+}
+
+impl ActivationForm {
+    pub fn new(config: &Config) -> Self {
+        Self {
+            justification: config.default_justification.clone(),
+            duration: config.default_duration_hours.to_string(),
+            ticket_number: String::new(),
+            ticket_system: config.default_ticket_system.clone(),
+            show_ticket: config.ticket_fields_enabled,
+            focused: ModalField::Duration,
+            jira_issues: Vec::new(),
+            jira_selected: None,
+            looked_up_issue: None,
+            justification_edited: false,
+            default_justification: config.default_justification.clone(),
+            ticket_edited_at: None,
+        }
+    }
+
+    /// Offer `issues` for the ticket number, picking the first one unless the
+    /// user already typed a ticket number.
+    pub fn set_jira_issues(&mut self, issues: Vec<JiraIssue>) {
+        self.jira_issues = issues;
+        if self.ticket_number.is_empty() {
+            if !self.jira_issues.is_empty() {
+                self.select_jira_issue(0);
+            }
+        } else {
+            self.on_ticket_number_edited();
+        }
+    }
+
+    /// Re-match the ticket number after a manual edit: pick it from the loaded
+    /// issues if present, otherwise queue a lookup.
+    pub fn on_ticket_number_edited(&mut self) {
+        let key = normalize_issue_key(&self.ticket_number);
+        self.jira_selected = self
+            .jira_issues
+            .iter()
+            .position(|i| i.key.eq_ignore_ascii_case(&key));
+        self.looked_up_issue = None;
+        self.ticket_edited_at =
+            (self.jira_selected.is_none() && is_issue_key(&key)).then(Instant::now);
+        self.apply_issue_summary();
+    }
+
+    /// The ticket number to look up once it has been left alone for `debounce`.
+    pub fn take_pending_lookup(&mut self, debounce: Duration) -> Option<String> {
+        if self.ticket_edited_at?.elapsed() < debounce {
+            return None;
+        }
+        self.ticket_edited_at = None;
+        Some(normalize_issue_key(&self.ticket_number))
+    }
+
+    /// The ticket number waiting for a lookup, if any.
+    pub fn pending_lookup_key(&self) -> Option<String> {
+        self.ticket_edited_at
+            .map(|_| normalize_issue_key(&self.ticket_number))
+    }
+
+    /// Apply a lookup result, ignoring it if the ticket number changed since.
+    pub fn set_looked_up_issue(&mut self, key: &str, issue: Option<JiraIssue>) {
+        if normalize_issue_key(&self.ticket_number) != key {
+            return;
+        }
+        // The answer is known, so no request is needed for this key.
+        self.ticket_edited_at = None;
+        if issue.is_some() && self.ticket_system.is_empty() {
+            self.ticket_system = "Jira".to_string();
+        }
+        self.looked_up_issue = issue;
+        self.apply_issue_summary();
+    }
+
+    /// The issue matching the current ticket number, if known.
+    pub fn current_issue(&self) -> Option<&JiraIssue> {
+        self.selected_jira_issue().or(self.looked_up_issue.as_ref())
+    }
+
+    fn apply_issue_summary(&mut self) {
+        if self.justification_edited {
+            return;
+        }
+        self.justification = match self.current_issue() {
+            Some(issue) if !issue.summary.is_empty() => issue.summary.clone(),
+            _ => self.default_justification.clone(),
+        };
+    }
+
+    /// Step through the Jira issues (wrapping) and copy the key into the form.
+    pub fn cycle_jira_issue(&mut self, forward: bool) {
+        let len = self.jira_issues.len();
+        if len == 0 {
+            return;
+        }
+        let next = match self.jira_selected {
+            None => 0,
+            Some(i) if forward => (i + 1) % len,
+            Some(i) => (i + len - 1) % len,
+        };
+        self.select_jira_issue(next);
+    }
+
+    fn select_jira_issue(&mut self, index: usize) {
+        self.jira_selected = Some(index);
+        self.looked_up_issue = None;
+        self.ticket_edited_at = None;
+        self.ticket_number = self.jira_issues[index].key.clone();
+        if self.ticket_system.is_empty() {
+            self.ticket_system = "Jira".to_string();
+        }
+        self.apply_issue_summary();
+    }
+
+    pub fn selected_jira_issue(&self) -> Option<&JiraIssue> {
+        self.jira_selected.and_then(|i| self.jira_issues.get(i))
+    }
+
+    /// Fields shown in the modal, in Tab order.
+    pub fn fields(&self) -> &'static [ModalField] {
+        if self.show_ticket {
+            &[
+                ModalField::Duration,
+                ModalField::TicketSystem,
+                ModalField::TicketNumber,
+                ModalField::Justification,
+            ]
+        } else {
+            &[ModalField::Duration, ModalField::Justification]
+        }
+    }
+
+    pub fn value(&self, field: ModalField) -> &str {
+        match field {
+            ModalField::Justification => &self.justification,
+            ModalField::Duration => &self.duration,
+            ModalField::TicketNumber => &self.ticket_number,
+            ModalField::TicketSystem => &self.ticket_system,
+        }
+    }
+
+    pub fn value_mut(&mut self, field: ModalField) -> &mut String {
+        match field {
+            ModalField::Justification => &mut self.justification,
+            ModalField::Duration => &mut self.duration,
+            ModalField::TicketNumber => &mut self.ticket_number,
+            ModalField::TicketSystem => &mut self.ticket_system,
+        }
+    }
+
+    /// Move focus forward (or backward) through the visible fields, wrapping.
+    pub fn cycle_focus(&mut self, forward: bool) {
+        let fields = self.fields();
+        let pos = fields.iter().position(|f| *f == self.focused).unwrap_or(0);
+        let next = if forward {
+            (pos + 1) % fields.len()
+        } else {
+            (pos + fields.len() - 1) % fields.len()
+        };
+        self.focused = fields[next];
+    }
+
+    pub fn to_request(&self, default_duration_hours: u32) -> ActivationRequest {
+        let ticket_number = self.ticket_number.trim();
+        let ticket_info = (self.show_ticket && !ticket_number.is_empty()).then(|| TicketInfo {
+            ticket_number: ticket_number.to_string(),
+            ticket_system: self.ticket_system.trim().to_string(),
+        });
+        ActivationRequest {
+            justification: self.justification.clone(),
+            duration_hours: self.duration.parse().unwrap_or(default_duration_hours),
+            ticket_info,
+        }
+    }
+}
+
+fn normalize_issue_key(s: &str) -> String {
+    s.trim().to_ascii_uppercase()
+}
+
+/// Matches Jira issue keys like `PROJ-123` (also keeps the key safe to put in a URL).
+fn is_issue_key(key: &str) -> bool {
+    let Some((project, number)) = key.rsplit_once('-') else {
+        return false;
+    };
+    project.starts_with(|c: char| c.is_ascii_alphabetic())
+        && project
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit())
 }
 
 pub struct App {
@@ -138,6 +372,7 @@ pub struct App {
     pub auth: Option<Arc<AuthData>>,
     pub last_refresh: Option<DateTime<Utc>>,
     pub role_permissions: HashMap<String, Vec<String>>,
+    pub jira_cache: JiraCache,
     pub detail_scroll: usize,
 }
 
@@ -149,8 +384,8 @@ impl App {
             group_roles: Vec::new(),
             groups_loaded: false,
             groups_loading: false,
-            group_status_message: "Press Tab to load groups".to_string(),
-            active_pane: Pane::Resources,
+            group_status_message: "Authenticating...".to_string(),
+            active_pane: Pane::Groups,
             filtered_indices: Vec::new(),
             selected: 0,
             view_filter: ViewFilter::All,
@@ -167,7 +402,18 @@ impl App {
             auth: None,
             last_refresh: None,
             role_permissions: HashMap::new(),
+            jira_cache: JiraCache::default(),
             detail_scroll: 0,
+        }
+    }
+
+    /// The open activation form, single or bulk.
+    pub fn activation_form_mut(&mut self) -> Option<&mut ActivationForm> {
+        match &mut self.modal {
+            ActiveModal::Activate { form, .. } | ActiveModal::BulkActivate { form, .. } => {
+                Some(form)
+            }
+            _ => None,
         }
     }
 
@@ -513,6 +759,28 @@ impl App {
             BgEvent::GraphStatus(msg) => {
                 self.group_status_message = msg;
             }
+            BgEvent::JiraIssuesLoaded(Ok(issues)) => {
+                self.jira_cache.store_search(Ok(issues.clone()));
+                if let Some(form) = self.activation_form_mut() {
+                    form.set_jira_issues(issues);
+                }
+            }
+            BgEvent::JiraIssuesLoaded(Err(e)) => {
+                self.jira_cache.store_search(Err(()));
+                tracing::warn!("Jira lookup failed: {e}");
+            }
+            BgEvent::JiraIssueLookedUp { key, result } => match result {
+                Ok(issue) => {
+                    self.jira_cache.store_issue(&key, Ok(issue.clone()));
+                    if let Some(form) = self.activation_form_mut() {
+                        form.set_looked_up_issue(&key, issue);
+                    }
+                }
+                Err(e) => {
+                    self.jira_cache.store_issue(&key, Err(()));
+                    tracing::warn!("Jira lookup of {key} failed: {e}");
+                }
+            },
         }
     }
 }

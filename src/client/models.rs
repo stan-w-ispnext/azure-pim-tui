@@ -96,6 +96,21 @@ pub struct PrincipalInfo {
 
 // --- Activation request body ---
 
+/// User input for an activation, shared by the ARM and Graph clients.
+#[derive(Debug, Clone)]
+pub struct ActivationRequest {
+    pub justification: String,
+    pub duration_hours: u32,
+    pub ticket_info: Option<TicketInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketInfo {
+    pub ticket_number: String,
+    pub ticket_system: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ActivationRequestBody {
     pub properties: ActivationProperties,
@@ -110,6 +125,8 @@ pub struct ActivationProperties {
     pub linked_role_eligibility_schedule_id: Option<String>,
     pub justification: Option<String>,
     pub schedule_info: Option<ScheduleInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticket_info: Option<TicketInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,6 +185,8 @@ pub struct GroupAssignmentRequest {
     pub justification: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule_info: Option<GroupScheduleInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticket_info: Option<TicketInfo>,
 }
 
 #[derive(Debug, Serialize)]
