@@ -19,28 +19,10 @@ Activate Azure PIM roles from your terminal. No portal clicking, no context swit
 
 ## Install
 
-### Homebrew (macOS / Linux)
+### Homebrew (macOS)
 
 ```bash
-brew install CosX/tap/azure-pim-tui
-```
-
-### Winget (Windows)
-
-```bash
-winget install CosX.AzurePimTui
-```
-
-### Chocolatey (Windows)
-
-```bash
-choco install azure-pim-tui
-```
-
-### cargo-binstall (pre-built binary)
-
-```bash
-cargo binstall azure-pim-tui
+brew install stan-w-ispnext/tap/azure-pim-tui
 ```
 
 ### cargo install (build from source)
@@ -51,12 +33,12 @@ cargo install azure-pim-tui
 
 ### Pre-built binaries
 
-Grab a binary for your platform from the [latest release](https://github.com/CosX/azure-pim-tui/releases/latest).
+Grab a binary for your platform from the [latest release](https://github.com/stan-w-ispnext/azure-pim-tui/releases/latest).
 
 ### Build from source
 
 ```bash
-git clone https://github.com/CosX/azure-pim-tui.git
+git clone https://github.com/stan-w-ispnext/azure-pim-tui.git
 cd azure-pim-tui
 cargo install --path .
 ```
@@ -64,7 +46,6 @@ cargo install --path .
 ## Usage
 
 ```bash
-az login
 azure-pim-tui
 ```
 
@@ -92,9 +73,16 @@ In the activation modal: `Tab` switches fields, `Enter` confirms, `Esc` cancels.
 A config file is created on first run at `~/.config/azure-pim-tui/config.toml`:
 
 ```toml
+default_client_id = "14d82eec-204b-4c2f-b7e8-296a70dab67e"  # app used for Graph sign-in
 default_justification = "Local development"
 default_duration_hours = 8
 auto_refresh_secs = 60
+ticket_fields_enabled = false   # show ticket number/system in the activation modal
+default_ticket_system = ""
+jira_url = ""                   # e.g. https://your-org.atlassian.net — prefills ticket number
+jira_email = ""
+jira_api_token = ""             # or set JIRA_API_TOKEN env var
+jira_jql = "assignee = currentUser() AND status = 'In Progress' ORDER BY updated DESC"
 ```
 
 ## How it works
