@@ -71,7 +71,14 @@ Async event-driven TUI using ratatui + crossterm + tokio. The app runs a 250ms t
 `~/.config/azure-pim-tui/config.toml` — auto-created with defaults on first run:
 
 ```toml
+default_client_id = "14d82eec-204b-4c2f-b7e8-296a70dab67e"  # app used for Graph sign-in
 default_justification = "Local development"
 default_duration_hours = 8
 auto_refresh_secs = 60
+ticket_fields_enabled = false   # show ticket number/system in the activation modal
+default_ticket_system = ""
+jira_url = ""                   # e.g. https://your-org.atlassian.net — prefills ticket number
+jira_email = ""
+jira_api_token = ""             # or set JIRA_API_TOKEN env var
+jira_jql = "assignee = currentUser() AND status = 'In Progress' ORDER BY updated DESC"
 ```

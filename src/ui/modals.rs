@@ -6,46 +6,24 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{ActiveModal, App, ModalField};
+use crate::app::{ActivationForm, ActiveModal, App, ModalField};
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     match &app.modal {
-        ActiveModal::Activate {
-            role_index,
-            justification,
-            duration,
-            focused_field,
-        } => {
+        ActiveModal::Activate { role_index, form } => {
             let role = &app.active_roles()[*role_index];
             render_activate_modal(
                 f,
                 area,
                 &role.role_name,
                 &role.scope_display_name,
-                justification,
-                duration,
-                focused_field,
+                form,
                 false,
                 1,
             );
         }
-        ActiveModal::BulkActivate {
-            indices,
-            justification,
-            duration,
-            focused_field,
-        } => {
-            render_activate_modal(
-                f,
-                area,
-                "Multiple Roles",
-                "",
-                justification,
-                duration,
-                focused_field,
-                true,
-                indices.len(),
-            );
+        ActiveModal::BulkActivate { indices, form } => {
+            render_activate_modal(f, area, "Multiple Roles", "", form, true, indices.len());
         }
         ActiveModal::DeactivateConfirm { role_index } => {
             let role = &app.active_roles()[*role_index];
@@ -58,41 +36,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_activate_modal(
     f: &mut Frame,
     area: Rect,
     role_name: &str,
     scope_name: &str,
-    justification: &str,
-    duration: &str,
-    focused: &ModalField,
+    form: &ActivationForm,
     is_bulk: bool,
     count: usize,
 ) {
-    let modal_area = centered_rect(50, 40, area);
+    let height = if form.show_ticket { 50 } else { 40 };
+    let modal_area = centered_rect(50, height, area);
     f.render_widget(Clear, modal_area);
 
     let title = if is_bulk {
         format!(" Activate {count} Roles ")
     } else {
         " Activate Role ".to_string()
-    };
-
-    let just_style = if *focused == ModalField::Justification {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-
-    let dur_style = if *focused == ModalField::Duration {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
     };
 
     let mut lines = vec![];
@@ -114,43 +74,50 @@ fn render_activate_modal(
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "Justification: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                "[{justification}{}]",
-                if *focused == ModalField::Justification {
-                    "▏"
-                } else {
-                    ""
-                }
+    for &field in form.fields() {
+        let focused = form.focused == field;
+        let style = if focused {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}: ", field.label()),
+                Style::default().add_modifier(Modifier::BOLD),
             ),
-            just_style,
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "Duration (hrs): ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                "[{duration}{}]",
-                if *focused == ModalField::Duration {
-                    "▏"
-                } else {
-                    ""
-                }
+            Span::styled(
+                format!("[{}{}]", form.value(field), if focused { "▏" } else { "" }),
+                style,
             ),
-            dur_style,
-        ),
-    ]));
+        ]));
+        if field == ModalField::TicketNumber {
+            let mut spans = vec![Span::raw("  ")];
+            if let Some(issue) = form.current_issue() {
+                spans.push(Span::styled(
+                    issue.summary.clone(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            if !form.jira_issues.is_empty() {
+                let position = form
+                    .jira_selected
+                    .map_or("-".to_string(), |i| (i + 1).to_string());
+                spans.push(Span::styled(
+                    format!("  ({position}/{} ↑/↓)", form.jira_issues.len()),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            if spans.len() > 1 {
+                lines.push(Line::from(spans));
+            }
+        }
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Tab: next field  Enter: activate  Esc: cancel",
+        "Tab/Shift+Tab: switch field  Enter: activate  Esc: cancel",
         Style::default().fg(Color::DarkGray),
     )));
 

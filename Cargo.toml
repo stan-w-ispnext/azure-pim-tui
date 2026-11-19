@@ -1,14 +1,14 @@
 [package]
 name = "azure-pim-tui"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
-authors = ["Karl Solgård <karl@solgard.solutions>"]
+authors = ["Karl Solgård <karl@solgard.solutions>", "Stan van de Wiel <stan.vandewiel@ispnext.com>"]
 description = "A terminal UI for managing Azure PIM role activations"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/CosX/azure-pim-tui"
-homepage = "https://github.com/CosX/azure-pim-tui"
-documentation = "https://github.com/CosX/azure-pim-tui"
+repository = "https://github.com/stan-w-ispnext/azure-pim-tui"
+homepage = "https://github.com/stan-w-ispnext/azure-pim-tui"
+documentation = "https://github.com/stan-w-ispnext/azure-pim-tui"
 keywords = ["azure", "pim", "tui", "terminal", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["target/", ".github/", ".git/", "*.sh"]
@@ -60,6 +60,8 @@ base64 = "0.22"
 futures = "0.3"
 async-trait = "0.1"
 time = "0.3"
+sha2 = "0.11.1"
+rand = "0.10.3"
 
 [profile.release]
 lto = true
@@ -70,6 +72,3 @@ codegen-units = 1
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.{ archive-format }"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
-
-[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
-pkg-fmt = "zip"

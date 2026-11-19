@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{ActiveModal, App, ModalField};
+use crate::app::{ActivationForm, ActiveModal, App};
 
 /// Returns true if a refresh should be triggered
 pub fn handle_key(app: &mut App, key: KeyEvent) -> EventAction {
@@ -61,9 +61,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> EventAction {
                 if role.status.is_eligible() {
                     app.modal = ActiveModal::Activate {
                         role_index: idx,
-                        justification: app.config.default_justification.clone(),
-                        duration: app.config.default_duration_hours.to_string(),
-                        focused_field: ModalField::Justification,
+                        form: ActivationForm::new(&app.config),
                     };
                 }
             }
@@ -99,9 +97,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> EventAction {
             if !eligible.is_empty() {
                 app.modal = ActiveModal::BulkActivate {
                     indices: eligible,
-                    justification: app.config.default_justification.clone(),
-                    duration: app.config.default_duration_hours.to_string(),
-                    focused_field: ModalField::Justification,
+                    form: ActivationForm::new(&app.config),
                 };
             }
             EventAction::None

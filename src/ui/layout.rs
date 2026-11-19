@@ -83,9 +83,9 @@ fn render_title_bar(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     let tabs = Paragraph::new(Line::from(vec![
         Span::raw(" "),
-        Span::styled("Resources", resources_style),
-        Span::raw("  "),
         Span::styled("Groups", groups_style),
+        Span::raw("  "),
+        Span::styled("Resources", resources_style),
         Span::styled("  (Tab)", Style::default().fg(Color::DarkGray)),
     ]))
     .block(

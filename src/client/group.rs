@@ -210,12 +210,7 @@ impl GroupPimClient {
         Ok(names)
     }
 
-    pub async fn activate_group(
-        &self,
-        role: &PimRole,
-        justification: &str,
-        duration_hours: u32,
-    ) -> Result<()> {
+    pub async fn activate_group(&self, role: &PimRole, request: &ActivationRequest) -> Result<()> {
         let token = self.get_token().await?;
         let url = format!(
             "{GRAPH_BASE}/identityGovernance/privilegedAccess/group/assignmentScheduleRequests"
@@ -231,13 +226,14 @@ impl GroupPimClient {
             principal_id: self.principal_id.clone(),
             group_id: role.group_id.clone().unwrap_or_default(),
             action: "selfActivate".to_string(),
-            justification: Some(justification.to_string()),
+            justification: Some(request.justification.clone()),
             schedule_info: Some(GroupScheduleInfo {
                 expiration: GroupExpirationInfo {
                     expiration_type: "afterDuration".to_string(),
-                    duration: format!("PT{duration_hours}H"),
+                    duration: format!("PT{}H", request.duration_hours),
                 },
             }),
+            ticket_info: request.ticket_info.clone(),
         };
 
         let resp = self
@@ -286,6 +282,7 @@ impl GroupPimClient {
             action: "selfDeactivate".to_string(),
             justification: None,
             schedule_info: None,
+            ticket_info: None,
         };
 
         let resp = self
